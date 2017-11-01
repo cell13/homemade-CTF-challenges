@@ -1,0 +1,255 @@
+用CRC32对长度为N的数据效验,初始效验值为0xFFFFFFFF,经过N轮以后得到的值取反作为效验值
+
+生成碰撞的关键就是能够找到4个字节使得效验值经过他们后得到一个已知的数
+
+设:
+在经过很多轮后效验值为ABCD,接着要效验的数据是abcd,效验后的结果为WXYZ,其中4轮的查表索引值为mnop
+(单个字母都表示一个字节)
+因此关键就是由ABCD+WXYZ推出abcd
+
+定义4个函数F(x),G(x),H(x),I(x)分别表示以x为索引查表,取出来的DWORD的从高位到低位的4个字节
+
+CRC32效验abcd的过程可以表示为:
+
+R0:A,B,C,D <m=D^d>
+R1:F(m),A^G(m),B^H(m),C^I(m) <n=c^C^I(m)>
+R2:F(n),F(m)^G(n),A^G(m)^H(n),B^H(m)^I(n) <o=b^B^H(m)^I(n)>
+R3:F(o),F(n)^G(o),F(m)^G(n)^H(o),A^G(m)^H(n)^I(o) <p=a^A^G(m)^H(n)^I(o)>
+R4:F(p),F(o)^G(p),F(n)^G(o)^H(p),F(m)^G(n)^H(o)^I(p)
+
+到R4这个得到的4个值就是效验和WXYZ,总结一下这个过程:
+
+-------------------------
+<1>
+W=F(p);
+X=F(o)^G(p);
+Y=F(n)^G(o)^H(p);
+Z=F(m)^G(n)^H(o)^I(p);
+
+<2>
+m=d^D;
+n=c^C^I(m);
+o=b^B^H(m)^I(n);
+p=a^A^G(m)^H(n)^I(o);
+-------------------------
+
+以上两个方程表示了ABCD,abcd,WXYZ之间的关系,而mnop是中间变量
+
+要解出abcd并不困难,设F(x)反函数为RF(x),得:
+-----------------------
+~<1>
+p=RF(W);
+o=RF(X^G(p));
+n=RF(Y^G(o)^H(p));
+m=RF(Z^G(n)^H(o)^I(p));
+
+~<2>
+d=m^D;
+c=n^C^I(m);
+b=o^B^H(m)^I(n);
+a=p^A^G(m)^H(n)^I(o);
+-----------------------
+
+这里假设要验证的数据在内存中的分布是:d,c,b,a  (这是为了方便处理小端模式)
+
+这样就可以得到一组数据值,不过这里关键的问题是RF(x)是否存在,下面这个函数可以证明y=F(x)是个一一映射:
+
+void TestRF()
+{
+  BYTE i,j;
+  DWORD flag;
+  for(i=0;i<=0xFF;i++)
+  {
+    flag=0;
+    for(j=0;j<=0xFF;j++)
+    {
+      if(HIBYTE(HIWORD(CRC32_tab[j])) == i)
+      {
+        flag=1;
+        printf("%X gets!\r\n",i);
+        break;
+      }
+      if(j==0xFF)break;
+    }
+    if(!flag)printf("%X can't get RF\r\n",i);
+    if(i==0xFF)break;
+  }
+}
+
+检测的结果是所有的0~255都是RF(x)的定义域,这说明RF(x)是完全存在的,上述算法完全可行!
+
+编程实现~<1> ~<2>的结果:
+
+BYTE RF(BYTE x)
+{
+  BYTE j;
+  for(j=0;j<=0xFF;j++)
+  {
+    if(HIBYTE(HIWORD(CRC32_tab[j])) == x)break;
+  }
+  return j;
+}
+
+BYTE F(BYTE x)
+{
+  return HIBYTE(HIWORD(CRC32_tab[x]));
+}
+BYTE G(BYTE x)
+{
+  return LOBYTE(HIWORD(CRC32_tab[x]));
+}
+BYTE H(BYTE x)
+{
+  return HIBYTE(LOWORD(CRC32_tab[x]));
+}
+BYTE I(BYTE x)
+{
+  return LOBYTE(LOWORD(CRC32_tab[x]));
+}
+
+#define MakeLong(a,b) MAKELONG(b,a)
+#define MakeWord(a,b) MAKEWORD(b,a)
+
+DWORD rCRC32(DWORD WXYZ,DWORD ABCD)
+{
+  BYTE p,o,n,m,a,b,c,d,W,X,Y,Z,A,B,C,D;
+
+  W=HIBYTE(HIWORD(WXYZ));
+  X=LOBYTE(HIWORD(WXYZ));
+  Y=HIBYTE(LOWORD(WXYZ));
+  Z=LOBYTE(LOWORD(WXYZ));
+
+  A=HIBYTE(HIWORD(ABCD));
+  B=LOBYTE(HIWORD(ABCD));
+  C=HIBYTE(LOWORD(ABCD));
+  D=LOBYTE(LOWORD(ABCD));
+
+  p=RF(W);
+  o=RF(X^G(p));
+  n=RF(Y^G(o)^H(p));
+  m=RF(Z^G(n)^H(o)^I(p));
+
+  d=m^D;
+  c=n^C^I(m);
+  b=o^B^H(m)^I(n);
+  a=p^A^G(m)^H(n)^I(o);
+
+  return MakeLong(MakeWord(a,b),MakeWord(c,d));
+}
+
+DWORD RCRC32(DWORD WXYZ,DWORD abcd)
+{
+  BYTE p,o,n,m,a,b,c,d,W,X,Y,Z,A,B,C,D;
+
+  W=HIBYTE(HIWORD(WXYZ));
+  X=LOBYTE(HIWORD(WXYZ));
+  Y=HIBYTE(LOWORD(WXYZ));
+  Z=LOBYTE(LOWORD(WXYZ));
+
+  a=HIBYTE(HIWORD(abcd));
+  b=LOBYTE(HIWORD(abcd));
+  c=HIBYTE(LOWORD(abcd));
+  d=LOBYTE(LOWORD(abcd));
+
+  p=RF(W);
+  o=RF(X^G(p));
+  n=RF(Y^G(o)^H(p));
+  m=RF(Z^G(n)^H(o)^I(p));
+
+  D=m^d;
+  C=n^c^I(m);
+  B=o^b^H(m)^I(n);
+  A=p^a^G(m)^H(n)^I(o);
+
+  return MakeLong(MakeWord(A,B),MakeWord(C,D));
+}
+
+DWORD CRC32(DWORD ABCD,DWORD abcd)
+{
+  BYTE p,o,n,m,a,b,c,d,W,X,Y,Z,A,B,C,D;
+
+  A=HIBYTE(HIWORD(ABCD));
+  B=LOBYTE(HIWORD(ABCD));
+  C=HIBYTE(LOWORD(ABCD));
+  D=LOBYTE(LOWORD(ABCD));
+
+  a=HIBYTE(HIWORD(abcd));
+  b=LOBYTE(HIWORD(abcd));
+  c=HIBYTE(LOWORD(abcd));
+  d=LOBYTE(LOWORD(abcd));
+
+  m=d^D;
+  n=c^C^I(m);
+  o=b^B^H(m)^I(n);
+  p=a^A^G(m)^H(n)^I(o);
+
+  W=F(p);
+  X=F(o)^G(p);
+  Y=F(n)^G(o)^H(p);
+  Z=F(m)^G(n)^H(o)^I(p);
+
+  return MakeLong(MakeWord(W,X),MakeWord(Y,Z));
+}
+
+这个寻找一个碰撞变得非常简单,首先选取任意的一段数据,做CRC32效验,结果就是ABCD
+通过计算方程组<1><2>后得到abcd,将abcd和原来的数据连接就是碰撞的结果!
+
+例如,"DonQuixote[CCG][iPB]"这个字符串的CRC32是0x8A0C90C9,下面这段代码可以算出它的碰撞来:
+
+int main(int argc, char* argv[])
+{
+
+  DWORD x=rCRC32(~0x8A0C90C9,~CRC((BYTE*)"ipb",3));
+
+  char str[5];
+  memcpy(str,&x,4);
+  str[4]=0;
+  printf("x=%X\r\nstring=%s\r\n",x,str);
+
+  return 0;
+}
+
+这里给出一些结果:
+
+DonQuixote[CCG][iPB]
+123咲p0
+ccg_G類
+ipbkw鼘
+
+他们都得到相同的CRC32效验和=0x8A0C90C9
+(看雪有个工具可以验证此结果,地址是http://www.pediy.com/tools/Cryptography/Hash/DAMN%20Hash%20Calculat
+
+or%20.zip)
+
+但是这么做必须修改最后一个DWORD,有时我们可能在修改中间某个位置的DWORD,这也是可以实现的
+只要根据WXYZ,abcd计算出ABCD就可以了:
+-------------------------
+(mnop的计算和~<1>~<2>一样)
+~<2'>
+D=m^d;
+C=n^c^I(m);
+B=o^b^H(m)^I(n);
+A=p^a^G(m)^H(n)^I(o);
+-------------------------
+这样可以把数据反着"效验"回去,到了中间某个位置再来放修改值
+
+****************************************************************************************8
+
+现在想到的一些应用:
+
+这种寻找碰撞的算法可以应用到anti-debug上,大多数效验都是把验证值放在效验段外面
+通过计算~<2'>和~<2>可以连着效验值一起计算,构造出数据满足:CRC(***A***)=A
+
+另外windows的系统文件也是CRC32效验的,这样就可以写出一种病毒感染系统文件后得到的效验值和原来的一样
+更好的用处的做成RootKit这样的后门,这样会更加难以被发现
+
+据说TCP/IP的数据包也是CRC32效验,那么也许可以写出病毒混乱一个数据包后使它的效验和不变
+
+......
+
+
+
+
+by DonQuixote[CCG][iPB]
+
+2004/12/20
